@@ -1,0 +1,692 @@
+---
+title: "Untitled"
+output: html_document
+date: '2022-06-20'
+---
+
+```{r 대한항공 댓글 분석, include=TRUE, echo=TRUE}
+library(tidyverse)
+library(tidytext)
+library(tidyselect)
+library(tidygraph)
+library(textclean)
+library(Sejong)
+library(showtext)
+library(ggwordcloud)
+library(rmarkdown)
+library(reprex)
+library(readxl)
+library(NIADic)
+library(magrittr)
+library(KoNLP)
+library(knitr)
+library(ggrepel)
+library(ggraph)
+library(rJava)
+library(tm)
+library(tokenizers)
+library(utf8)
+library(rlang)
+library(glue)
+library(NLP)
+library(widyr)
+library(remotes)
+library(ldatuning)
+library(topicmodels)
+library(scales)
+
+#1. 첨부된 대한항공 댓글을 읽어와 명사/형용사/동사를 토큰으로 선택하고 명사/형용사/동사의 기능을 하지 못하는 단어들을 stopword로 정의하여 제외, 유사어 처리 등의 향후 텍스트 분석을 하기 위한 전처리 하기.
+
+setwd('C:/Users/jspar/OneDrive/Documents/학교/전공/텍마')
+raw_comment <- read_xlsx("대한항공201601-201910.xlsx")
+
+# 댓글 전처리
+krair_comment <- raw_comment %>%
+                 rename('reply' = '댓글(작성내용)') %>%
+                 select(reply) %>%
+                 mutate(reply_raw = str_squish(replace_html(reply)),
+                        reply = str_replace_all(reply, "[^가-힣]", " "),
+                        reply = str_squish(reply),
+                        id = row_number())
+
+
+
+# 품사 분리하여 행 구성
+comment_pos <- krair_comment %>%
+               unnest_tokens(input = reply, output = word,
+               token = SimplePos22, drop = F) %>%
+               separate_rows(word, sep = "[+]") %>%
+               filter(str_length(word) >= 2) %>% print()
+
+# 명사 추출
+noun <- comment_pos %>%
+        filter(str_detect(word, "/n")) %>%
+        mutate(word = str_remove(word, "/.*$"))
+noun <- noun %>% filter(str_length(word) >= 2)
+
+
+# 동사 추출
+pv <- comment_pos %>%
+filter(str_detect(word, "/pv")) %>% # "/pv" 추출
+mutate(word = str_replace(word, "/.*$", "다"))
+
+
+# 형용사 추출
+pa <- comment_pos %>%
+filter(str_detect(word, "/pa")) %>% # "/pa" 추출
+mutate(word = str_replace(word, "/.*$", "다"))
+
+
+# 명사/동사/형용사 통합
+all_comment <- comment_pos %>%
+               separate_rows(word, sep = "[+]") %>%
+               filter(str_detect(word, "/n|/pv|/pa")) %>%
+               mutate(word = ifelse(str_detect(word, "/pv|/pa"), 
+                                    str_replace(word, "/.*$", "다"),
+                                    str_remove(word, "/.*$"))) %>%
+               filter(str_length(word) >= 2) %>%
+               arrange(id) %>% print()
+
+
+# 중복단어 및 불용어 처리를 위한 빈도 수 파악
+# 명사 빈도 생성
+count_noun <- noun %>% count(word, sort = T)
+# 동사 빈도 생성
+count_pv <- pv %>% count(word, sort = T)
+# 형용사 빈도 생성
+count_pa <- pa %>% count(word, sort = T)
+# 명사/동사/형용사 통합 빈도 생성
+count_all <- all_comment %>% count(word, sort = T)
+
+# 중복단어 처리
+noun <- noun %>% add_count(word, sort=TRUE) %>%
+                 filter(!word %in% c("대한항공", "비행기", "비행", "항공사",
+                                     "항공", "공항", "항공권", "항공편", "항공기"))
+
+
+# 유사어 통일
+noun <- noun %>% mutate(word = ifelse(str_detect(word, "^승무원"), "승무원", word),
+                        word = ifelse(str_detect(word, "^직원"), "직원", word),
+                        word = ifelse(str_detect(word, "좋았습니"), "좋음", word),
+                        word = ifelse(str_detect(word, "좋았"), "좋음", word),
+                        word = ifelse(str_detect(word, "좋습니"), "좋음", word),
+                        word = ifelse(str_detect(word, "좋은거"), "좋음", word),
+                        word = ifelse(str_detect(word, "좋았던거"), "좋음", word),
+                        word = ifelse(str_detect(word, "좋으네"), "좋음", word),
+                        word = ifelse(str_detect(word, "좋았슴"), "좋음", word),
+                        word = ifelse(str_detect(word, "좋았답니"), "좋음", word),
+                        word = ifelse(str_detect(word, "짱좋음"), "좋음", word),
+                        word = ifelse(str_detect(word, "좋았"), "좋음", word),
+                        word = ifelse(str_detect(word, "좋은서비스로"), "좋은서비스", word),
+                        word = ifelse(str_detect(word, "^편안"), "편안", word),
+                        word = ifelse(str_detect(word, "^친절"), "친절", word),
+                        word = ifelse(str_detect(word, "^사용"), "사용", word),
+                        word = ifelse(str_detect(word, "^제공"), "제공", word),
+                        word = ifelse(str_detect(word, "^훌륭"), "훌륭", word),
+                        word = ifelse(str_detect(word, "^사람"), "사람", word),
+                        word = ifelse(str_detect(word, "^선택"), "선택", word),
+                        word = ifelse(str_detect(word, "전체적"), "전반적", word))
+pv <- pv %>% mutate(word = ifelse(str_detect(word, "트다"), "타다", word),
+                    word = ifelse(str_detect(word, "^들어와"), "들어오다", word),
+                    word = ifelse(str_detect(word, "^들으니"), "듣다", word),)
+pa <- pa %>% mutate(word = ifelse(str_detect(word, "맛나다"), "맛있다", word),
+                    word = ifelse(str_detect(word, "맛있다다"), "맛있다", word),
+                    word = ifelse(str_detect(word, "예쁘다"), "아름답다", word),
+                    word = ifelse(str_detect(word, "훌륭하다다"), "훌륭하다", word),
+                    word = ifelse(str_detect(word, "죄송하다다"), "죄송하다", word),
+                    word = ifelse(str_detect(word, "필요하다다"), "필요하다", word),
+                    word = ifelse(str_detect(word, "가능하다다"), "가능하다", word),
+                    word = ifelse(str_detect(word, "당연하다다"), "당연하다", word))
+
+
+# 명사/동사/형용사 통합 처리
+all_comment <- all_comment %>%
+               add_count(word, sort=TRUE) %>%
+               filter(!word %in% c("대한항공", "비행기", "비행", "항공사",
+                                   "항공", "공항", "항공권", "항공편", "항공기")) %>%
+               mutate(word = ifelse(str_detect(word, "^승무원"), "승무원", word),
+                      word = ifelse(str_detect(word, "^직원"), "직원", word),
+                      word = ifelse(str_detect(word, "좋았습니"), "좋음", word),
+                      word = ifelse(str_detect(word, "좋았"), "좋음", word),
+                      word = ifelse(str_detect(word, "좋습니"), "좋음", word),
+                      word = ifelse(str_detect(word, "좋은거"), "좋음", word),
+                      word = ifelse(str_detect(word, "좋았던거"), "좋음", word),
+                      word = ifelse(str_detect(word, "좋으네"), "좋음", word),
+                      word = ifelse(str_detect(word, "좋았슴"), "좋음", word),
+                      word = ifelse(str_detect(word, "좋았답니"), "좋음", word),
+                      word = ifelse(str_detect(word, "짱좋음"), "좋음", word),
+                      word = ifelse(str_detect(word, "좋았"), "좋음", word),
+                      word = ifelse(str_detect(word, "좋은서비스로"), "좋은서비스", word),
+                      word = ifelse(str_detect(word, "^편안"), "편안", word),
+                      word = ifelse(str_detect(word, "^친절"), "친절", word),
+                      word = ifelse(str_detect(word, "^사용"), "사용", word),
+                      word = ifelse(str_detect(word, "^제공"), "제공", word),
+                      word = ifelse(str_detect(word, "^훌륭"), "훌륭", word),
+                      word = ifelse(str_detect(word, "^사람"), "사람", word),
+                      word = ifelse(str_detect(word, "^선택"), "선택", word),
+                      word = ifelse(str_detect(word, "전체적"), "전반적", word),
+                      word = ifelse(str_detect(word, "트다"), "타다", word),
+                      word = ifelse(str_detect(word, "^들어와"), "들어오다", word),
+                      word = ifelse(str_detect(word, "^들으니"), "듣다", word),
+                      word = ifelse(str_detect(word, "맛나다"), "맛있다", word),
+                      word = ifelse(str_detect(word, "맛있다다"), "맛있다", word),
+                      word = ifelse(str_detect(word, "예쁘다"), "아름답다", word),
+                      word = ifelse(str_detect(word, "훌륭하다다"), "훌륭하다", word),
+                      word = ifelse(str_detect(word, "죄송하다다"), "죄송하다", word),
+                      word = ifelse(str_detect(word, "필요하다다"), "필요하다", word),
+                      word = ifelse(str_detect(word, "가능하다다"), "가능하다", word),
+                      word = ifelse(str_detect(word, "당연하다다"), "당연하다", word))
+# 빈도 갱신
+# 명사 빈도 생성
+count_noun <- noun %>% count(word, sort = T)
+# 동사 빈도 생성
+count_pv <- pv %>% count(word, sort = T)
+# 형용사 빈도 생성
+count_pa <- pa %>% count(word, sort = T)
+# 명사/동사/형용사 통합 빈도 생성
+count_all <- all_comment %>% count(word, sort = T)
+
+# 불용어 처리
+stopword <- c( "들이", "하다", "하게", "하면", "해서", "이번", "하네",
+               "해요", "이것", "니들", "하기", "하지", "한거", "해주",
+               "그것", "어디", "여기", "까지", "이거", "하신", "만큼",
+               "하려", "해라", "하나", "니들", "에서", "그렇다", "어떻다", "들다",
+               "일다", "그러다", "우리", "있습니", "정도", "경우", "되었습니",
+               "가지", "되다", "번째", "동안", "어떠하다", "이러하다", "그러하다",
+               "서울", "인천", "한국")
+
+# 불용어 제거(단어 수 카운팅 한 변수에)
+count_noun <- count_noun %>%
+              filter(!word %in% stopword)
+count_pv <- count_pv %>%
+            filter(!word %in% stopword)
+count_pa <- count_pa %>%
+            filter(!word %in% stopword)
+count_all <- count_all %>%
+             filter(!word %in% stopword)
+# 불용어 제거(단어 자체 변수에)
+noun <- noun %>% filter(!word %in% stopword)
+pv <- pv %>% filter(!word %in% stopword)
+pa <- pa %>% filter(!word %in% stopword)
+all_comment <- all_comment %>% filter(!word %in% stopword)
+
+
+
+
+#2. 전체 댓글의 명사/형용사/동사들에 대한 워드클라우드 그리기.
+# 명사 워드클라우드
+top100noun <- count_noun %>% head(100)
+
+font_add_google(name = "Nanum Gothic", family = "nanumgothic")
+showtext_auto()
+top100noun %>% ggplot(aes(label = word, size = n, 
+                          color = factor(sample.int(n=10,
+                                                    size=nrow(top100noun),
+                                                    replace = TRUE)))) +
+               geom_text_wordcloud(seed = 1234) +
+               scale_radius(limits = c(3, NA),
+                            range = c(3, 15)) +
+               theme_minimal()
+
+# 동사 워드클라우드
+top100pv <- count_pv %>% head(100)
+
+font_add_google(name = "Nanum Gothic", family = "nanumgothic")
+showtext_auto()
+top100pv %>% ggplot(aes(label = word, size = n, 
+                        color = factor(sample.int(n=10,
+                                                  size=nrow(top100pv),
+                                                  replace = TRUE)))) +
+             geom_text_wordcloud(seed = 1234) +
+             scale_radius(limits = c(3, NA),
+                          range = c(3, 15)) +
+             theme_minimal()
+
+# 형용사 워드클라우드
+top100pa <- count_pa %>% head(100) # 가시성을 위해 top100 추출
+
+font_add_google(name = "Nanum Gothic", family = "nanumgothic")
+showtext_auto()
+top100pa %>% ggplot(aes(label = word, size = n, 
+                          color = factor(sample.int(n=10,
+                                                    size=nrow(top100pa),
+                                                    replace = TRUE)))) +
+               geom_text_wordcloud(seed = 1234) +
+               scale_radius(limits = c(3, NA),
+                            range = c(3, 15)) +
+               theme_minimal()
+
+# 명사/동사/형용사 통합 워드클라우드 
+top100all <- count_all %>% head(100)
+
+font_add_google(name = "Nanum Gothic", family = "nanumgothic")
+showtext_auto()
+top100all %>% ggplot(aes(label = word, size = n, 
+                          color = factor(sample.int(n=10,
+                                                    size=nrow(top100all),
+                                                    replace = TRUE)))) +
+               geom_text_wordcloud(seed = 1234) +
+               scale_radius(limits = c(3, NA),
+                            range = c(3, 15)) +
+               theme_minimal()
+
+
+
+
+
+#3. 전체 댓글의 명사들에 대한 동시출현 한 단어들의 빈도수를 가지고 연결중심성을 크기로 표시하고 커뮤니티를 나타내는 단어 네트워크 그림 그리기.
+
+# 단어 동시 출현 빈도 구하기
+pair <- noun %>% pairwise_count(item = word,
+                                feature = id,
+                                sort = T)
+
+# 네트워크 그래프 데이터에 연결 중심성, 커뮤니티 변수 추가
+set.seed(1234)
+graph_comment <- pair %>% filter(n >= 30) %>%
+                 as_tbl_graph(directed = F) %>%
+                 mutate(centrality = centrality_degree(),
+                 group = as.factor(group_infomap()))
+
+# 네트워크 그래프에 연결 중심성과 커뮤니티 표현
+set.seed(1234)
+ggraph(graph_comment, layout = "fr") +
+geom_edge_link(color = "gray50",
+               alpha = 0.5) +
+geom_node_point(aes(size = centrality, color = group), show.legend = F) +
+scale_size(range = c(5, 10)) +
+geom_node_text(aes(label = name),
+                   repel = T,
+                   size = 4,
+                   family = "nanumgothic") +
+theme_graph()
+
+
+
+
+
+#4. 전체 댓글의 명사들의 상관성을 나타내는 파이계수들을 가지고 연결중심성을 크기로 표시하고 커뮤니티를 나타내는 단어 네트워크 그리기.
+
+# 두 명사 쌍 상관계수 구하기
+word_cors <- noun %>% 
+             add_count(word) %>% 
+             filter(n >= 20) %>%
+             pairwise_cor(item = word, feature = id, sort = T)
+
+# 관심 단어 목록 생성
+target <- c("서비스", "가격", "좌석", "음식", "승무원", "직원")
+top_cors <- word_cors %>%
+            filter(item1 %in% target) %>%
+            group_by(item1) %>%
+            slice_max(correlation, n = 10) 
+
+# 연결 중심성과 커뮤니티 추가
+set.seed(1234)
+graph_cors <- word_cors %>%
+              filter(correlation >= 0.15) %>% 
+              as_tbl_graph(directed = F) %>%
+              mutate(centrality = centrality_degree(),
+              group = as.factor(group_infomap()))
+
+# 파이계수 네트워크 그래프 그리기
+font_add_google(name = "Nanum Gothic", family = "nanumgothic")
+showtext_auto()
+
+set.seed(1234)
+graph_cors %>% 
+ggraph(layout = "fr") +
+geom_edge_link(color = "gray50", aes(edge_alpha = correlation,
+                                     edge_width = correlation),
+               show.legend = F) +
+scale_edge_width(range = c(1, 4)) +
+geom_node_point(aes(size = centrality, color = group),
+               show.legend = F) +
+scale_size(range = c(4, 8)) +
+geom_node_text(aes(label = name), repel = T, size = 4, family = "nanumgothic") +
+theme_graph()
+
+
+
+
+
+#5~12: 명사/형용사/동사를 이용한 토픽모델 활용.
+
+
+#5. 토픽을 찾기 위한 적합한 토픽의 수 찾기(최적의 토픽 수는 절대 8개를 넘지 말아야 함). 즉 토픽 8개까지 중 가장 설명력이 큰 토픽수 찾기.
+
+all_comment_id <- all_comment %>%
+                  add_count(word) %>% 
+                  select(id, word, n)
+
+# 문서별 단어 빈도
+count_word <- all_comment_id %>% count(id, word, sort = T)
+
+# DTM 생성
+dtm_krair <- count_word %>%
+             cast_dtm(document = id, term = word, value = n)
+
+# DTM 내용 확인하기
+as.matrix(dtm_krair[1:15, 1:15])
+
+# 토픽 수 비교하여 성능 비교
+models_krair <- FindTopicsNumber(dtm = dtm_krair,
+                                 topics = 2:15,
+                                 return_models = T,
+                                 control = list(seed = 1234))
+models_krair %>% select(topics, Griffiths2004) 
+
+# 성능 지표 그래프
+FindTopicsNumber_plot(models_krair) # 최적 토픽 수: 7개
+
+
+
+
+
+
+
+#6. 각 토픽 내에서의 어떠한 단어들이 중심인지를 알아보기 위해 토픽 별 워드클라우드를 한 페이지에 그리기.
+
+# 토픽 수 7개인 lda 모델 생성
+lda_model <- LDA(dtm_krair, k = 7, method = "Gibbs", control = list(seed = 1234))
+
+# gamma 추출
+doc_topic <- tidy(lda_model, matrix = "gamma") %>% 
+             mutate(topic_name = paste( "Topic", topic))
+
+# 문서 별로 확률이 가장 높은 토픽 추출
+doc_class <- doc_topic %>%
+             group_by(document) %>%
+             slice_max(gamma, n = 1)
+
+# 데이터셋을 결합하기 위해 기준 변수 타입을 integer로 변환
+doc_class$document <- as.integer(doc_class$document)
+
+all_comment_topic <- all_comment %>%
+                     left_join(doc_class, by = c("id" = "document")) %>% 
+# 전처리 작업을 거치지 않은 raw data에 결합했으므로 topic에 NA 존재
+                     na.omit()
+
+# 토픽 별 단어 빈도
+count_alltp <- all_comment_topic %>%
+               group_by(topic_name) %>%
+               count(word, sort = T)
+
+
+# 토픽 별 워드클라우드
+count_alltp %>% group_by(topic_name) %>%
+                ggplot(aes(label = word, size = n, 
+                           color = factor(sample.int(n=10, 
+                                                     size=nrow(count_alltp),
+                                                     replace = TRUE)))) +
+facet_wrap(~ topic_name, scales = "free", ncol = 3) +
+geom_text_wordcloud(seed = 1234) +
+scale_radius(limits = c(10, NA), range = c(3, 15)) + 
+theme_minimal()
+
+
+
+
+
+#7. 각 토픽 내에서 어떠한 단어가 중요한지를 알기 위해 토픽 별 TF-IDF를 구하고 각 토픽 별 TF-IDF에 의한  중요단어 10개에 대한 막대그래프를 한 페이지에 그리기.
+
+# 토픽 별 단어 빈도수를 기반으로 tf-idf 구하기
+tfidf_topic <- count_alltp %>%
+               bind_tf_idf(term = word,
+                           document = topic_name,
+                           n = n) %>%
+               arrange(-tf_idf)
+
+# 주요 단어 10개 추출
+top10 <- tfidf_topic %>%
+         group_by(topic_name) %>%
+         slice_max(tf_idf, n = 10, with_ties = F) 
+
+
+# 막대그래프 생성
+font_add_google(name = "Nanum Gothic", family = "nanumgothic")
+showtext_auto()
+
+top10$topic_name %>% ggplot(aes(x = reorder_within(word, tf_idf, topic_name),
+                                y = tf_idf, fill = topic_name)) +
+geom_col(show.legend = F) +
+coord_flip() +
+facet_wrap(~ topic_name, scales = "free", ncol = 7) +
+scale_x_reordered() +
+scale_y_continuous(n.breaks = 5,
+labels = number_format(accuracy = .001)) +
+labs(title = "대한항공 댓글 주요 단어",
+     subtitle = "토픽 별 TF-IDF Top 10",
+     x = NULL) +
+theme_minimal() +
+theme(text = element_text(family = "nanumgothic"),
+      plot.title = element_text(size = 14, face = "bold"),
+      plot.subtitle = element_text(size = 12),
+      strip.text = element_text(size = 11)) # 카테고리명 폰트
+
+
+
+
+
+
+#8. 각각의 토픽들에 대해서 어떠한 단어가 토픽의 내용을 구분한지 알기 위해 각 토픽 별 beta의 값의 큰 순서대로 단어를 나타내는 워드클라우드를 한 페이지에 그리기.
+
+# 토픽 수 7개인 모델 생성
+lda_model <- LDA(dtm_krair, k = 7, method = "Gibbs", control = list(seed = 1234))
+
+# 주요 단어 확인
+# 단어들이 토픽 별로 들어갈 확률 beta 추출
+term_topic <- tidy(lda_model, matrix = "beta") %>%
+              mutate(topic_name = paste("Topic", topic))
+
+# 토픽별 beta 값 큰 순서대로 단어 추출
+term_topic %>% group_by(topic) %>% slice_max(beta)
+
+
+# 토픽 별 워드클라우드
+term_topic %>% group_by(topic_name) %>%
+               ggplot(aes(label = term, size = beta*10000, 
+                          color = factor(sample.int(n=10, 
+                                                    size=nrow(term_topic),
+                                                    replace = TRUE)))) +
+facet_wrap(~ topic_name, scales = "free", ncol = 3) +
+geom_text_wordcloud(seed = 1234) +
+scale_radius(limits = c(10, NA), range = c(3, 15)) + 
+theme_minimal()
+
+
+
+
+
+#9. 각각의 토픽들에 대해서 어떠한 단어가 토픽의 내용을 구분한지 알기 위해 각 토픽 별  beta 값이 큰 중요단어 10개에 대한 막대그래프를 한 페이지에 그리기.
+
+# 단어가 들어 있는 term_topic을 이용하여 토픽 별 beta 값이 높은 단어 10개를 추려냄
+top_terms <- term_topic %>%
+             group_by(topic_name) %>%
+             slice_max(order_by=beta, n = 10, with_ties = F) %>%
+             summarise(term = paste(term, collapse = ", "))
+
+# 원문에 토픽 번호 부여
+krair_topic <- krair_comment %>%
+               left_join(doc_class, by = c("id" = "document")) %>% na.omit()
+krair_topic %>% select(id, topic, gamma, topic_name) 
+
+# 원문과 토픽 번호가 들어 있는 krair_topic을 이용하여 토픽 별 문서를 구함
+count_topic <- krair_topic %>%
+               count(topic_name) %>% na.omit()
+
+# count_topic에 top_terms를 결합한 다음 막대 그래프의 x축에 Topic 1의 형태로 토픽 번호를 표시하기 위해 topic_name으로 결합
+count_topic_word <- count_topic %>%
+                    left_join(top_terms, by = "topic_name")
+
+
+# 토픽 별 문서 수와 주요 단어로 막대그래프
+# geom_text()를 이용해 막대 끝에 문서 빈도를 표시하고, 막대 안에 토픽의 주요 단어를 표시함
+font_add_google(name = "Nanum Gothic", family = "nanumgothic")
+showtext_auto()
+
+count_topic_word %>% ggplot(aes(x = reorder(x=topic_name, X=n),
+                                y = n, fill = topic_name)) +
+geom_col(show.legend = F) +
+coord_flip() +
+geom_text(aes(label = n), # 문서 빈도 표시
+          hjust = -0.2) + # 막대 밖에 표시
+geom_text(aes(label = term), # 주요 단어 표시
+          hjust = 1.03, # 막대 안에 표시
+          col = "white", # 색
+          fontface = "bold", # 글씨 두께
+          family = "nanumgothic") + # 폰트
+          scale_y_continuous(expand = c(0, 0), # y축-막대 간격 줄이기
+          limits = c(0, 215)) + # y축 범위
+labs(x = NULL) +
+ylab( "단어 수")
+
+
+
+
+
+
+#10. 각각의 토픽 별 감마값이 큰 문장들을 5개씩만 뽑아 실제 문장과 감마값만을 출력하고 주로 어떠한 내용인지 살펴보기.
+
+# gamma 추출
+doc_topic <- tidy(lda_model, matrix = "gamma") %>% 
+             mutate(topic_name = paste( "Topic", topic))
+
+# 문서 별로 확률이 가장 높은 토픽 추출
+doc_class <- doc_topic %>%
+             group_by(document) %>%
+             slice_max(gamma, n = 1)
+
+# 데이터셋을 결합하기 위해 기준 변수 타입을 integer로 변환
+doc_class$document <- as.integer(doc_class$document)
+
+
+# 토픽별 주요 문서 추출
+reply_topic <- krair_topic %>%
+               group_by(topic) %>%
+               slice_max(gamma, n = 100) 
+
+# 토픽 1 내용 살펴보기
+reply_topic %>% filter(topic == 1) %>% pull(gamma, reply_raw) %>% head(5)
+# 토픽 2 내용 살펴보기
+reply_topic %>% filter(topic == 2) %>% pull(reply_raw, gamma) %>% head(5)
+# 토픽 3 내용 살펴보기
+reply_topic %>% filter(topic == 3) %>% pull(reply_raw, gamma) %>% head(5)
+# 토픽 4 내용 살펴보기
+reply_topic %>% filter(topic == 4) %>% pull(reply_raw, gamma) %>% head(5)
+# 토픽 5 내용 살펴보기
+reply_topic %>% filter(topic == 5) %>% pull(reply_raw, gamma) %>% head(5)
+# 토픽 6 내용 살펴보기
+reply_topic %>% filter(topic == 6) %>% pull(reply_raw, gamma) %>% head(5)
+# 토픽 7 내용 살펴보기
+reply_topic %>% filter(topic == 7) %>% pull(reply_raw, gamma) %>% head(5)
+
+
+
+
+#11. 각 토픽들의 감정 단어들을 사용한 감정분석을 통해 각 토픽들을 긍정과 부정으로 구분하기.
+
+# 감정 사전 불러오기
+senti_dic <- read_delim("SentiWord_Dict.txt", delim='\t',
+                        col_names=c("word","polarity"))
+
+# 감정 점수 부여
+all_comment_topic <- all_comment_topic %>%
+                     left_join(senti_dic, by = "word") %>% # 감성 사전 결합
+                     mutate(polarity = ifelse(is.na(polarity), 0, polarity)) # 감성 사전에 없으면 중립
+
+# 감정이 분명한 단어를 살펴보기 위해 2 이상이면 ‘positive’, -2 이하이면 ‘negative’ 그 외는 ‘neutural’로 분류
+all_comment_topic <- all_comment_topic %>%
+                     mutate(sentiment = ifelse(polarity == 2, "positive",
+                                        ifelse(polarity == -2, "negative", "neutural")))
+# 토픽 별 점수 합산
+score_comment <- all_comment_topic %>%
+                 group_by(topic_name) %>%
+                 summarise(score = sum(polarity)) %>% ungroup() %>%
+                 mutate(sentiment = ifelse(score > 0, "positive",
+                                    ifelse(score < 0, "negative", "neutural")))
+
+# 댓글의 감정 빈도와 비율 생성
+frequency_score <- all_comment_topic %>%
+                   group_by(topic_name) %>%
+                   count(sentiment) %>%
+                   mutate(ratio = n/sum(n)*100) %>% print()
+
+
+
+
+
+
+
+
+#12. 각 토픽들 내에서 사용된 긍정과 부정 단어들을 가지고 각 토픽 별 단어들에 대한 로그RR을 적당한 페이지를 할당하여 그래프 그리기.
+
+new_frequency_word <- all_comment_topic %>%
+                      group_by(topic_name) %>%
+                      count(sentiment, word, sort = T)
+
+new_comment_wide <- new_frequency_word %>% # Wide form으로 변환
+                    filter(sentiment != "neu") %>%
+                    pivot_wider(names_from = sentiment, 
+                                values_from = n,
+                                values_fill = list(n = 0))
+
+# 로그RR 구하기
+new_comment_wide <- new_comment_wide %>%
+                    mutate(log_RR = log(((positive + 1) / (sum(positive + 1))) /
+                                       ((negative + 1) / (sum(negative + 1))))) 
+
+new_top10 <- new_comment_wide %>%
+             group_by(sentiment = ifelse(log_RR > 0, "positive", "negative")) %>%
+             slice_max(abs(log_RR), n = 50, with_ties = F)
+
+new_top10 %>% group_by(topic_name) %>%
+              ggplot(aes(x = reorder(word, log_RR), y = log_RR,
+                     fill = sentiment)) +
+geom_col() +
+facet_wrap(~ topic_name, scales = "free", ncol = 3) +
+scale_radius(limits = c(10, NA), range = c(3, 15)) + 
+coord_flip() +
+labs(x = NULL) +
+theme(text = element_text(family = "nanumgothic"))
+theme_minimal()
+
+
+
+#12. 위의 모든 것을 고려하여 각 토픽에 대한 이름을 짓고 전체적으로 대한항공 이용 댓글에 대한 텍스트마이닝을 통해 제시하고자 하는 시사점을 설명하기.
+
+# 토픽 이름 목록 작성
+name_topic <- tibble(topic = 1:7,
+                     name = c("1.노선 변경 및 딜레이(출발, 도착 시간)에 따른 아쉬움",
+                              "2.승무원 서비스(직원 서비스) 부분에서 평가 - (아이들을)친절히 대함",
+                              "3.음식 및 영화 선택 폭 평가 - 선택 폭이 별로 없다 & 괜찮다",
+                              "4.기내식 부분에서 평가 - 비빔밥 두드러짐",
+                              "5.이코노미 이용자의 좌석 부분에서 평가 - 편하고 넓음",
+                              "6.프리스티지 장거리 이용자의 좌석 평가 - 편하고 공간적 여유",
+                              "7.특정 클래스(퍼스트, 비즈니스) 서비스 평가 - 훌륭"))
+
+top_term_topic <- term_topic %>% count(word) 
+# 토픽 이름 결합하기
+top_term_topic_name <- top_term_topic %>%
+                       left_join(name_topic, name_topic, by = "topic")
+
+ # 한글 폰트 설정
+font_add_google(name = "Nanum Gothic", family = "nanumgothic")
+showtext_auto()
+
+top_term_topic_name %>% ggplot(aes(x = reorder_within(term, by=beta, within=name),
+                                   y = beta, fill = factor(topic))) +
+geom_col(show.legend = F) +
+facet_wrap(~ name, scales = "free", ncol = 4) +
+coord_flip() +
+scale_x_reordered() +
+labs(title = "대한항공 이용 댓글 토픽",
+     subtitle = "토픽별 주요 단어 Top 10",
+     x = NULL, y = NULL) +
+theme_minimal() +
+theme(text = element_text(family = "nanumgothic"),
+      title = element_text(size = 12),
+      axis.text.x = element_blank(), # x축 이름 삭제
+      axis.ticks.x = element_blank()) # x축 눈금 삭제
+
+
+```
